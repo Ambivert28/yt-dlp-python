@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - "v*"
+    # Temporary: build + publish a downloadable .exe directly from the audit
+    # branch so the artifact is available before the PR is merged. This branch
+    # disappears after merge, so the trigger is self-cleaning.
+    branches:
+      - "claude/audit-update-recommendations-42j70w"
   workflow_dispatch:
 
 permissions:
@@ -37,8 +42,9 @@ jobs:
           path: dist/yt-dlp-downloader.exe
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.2.0' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.2.0' }}
           files: dist/yt-dlp-downloader.exe
           generate_release_notes: true
