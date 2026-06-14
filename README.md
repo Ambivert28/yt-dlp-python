@@ -6,6 +6,10 @@ The prebuilt `yt-dlp-downloader.exe` is published on the
 Download the latest `.exe` and run it — yt-dlp and ffmpeg are fetched on first
 run. The binary is no longer committed to the repository.
 
+## Roadmap
+Planned but not-yet-done items for upcoming releases are tracked in
+[`ROADMAP.md`](ROADMAP.md).
+
 ## Requirements (run from source)
 - Python 3.10 or newer (the code uses PEP 604 `X | None` type hints).
 - Tkinter (ships with the official CPython installers on Windows/macOS; on
