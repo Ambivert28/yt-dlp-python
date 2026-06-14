@@ -5,11 +5,11 @@ wydaniach. Pogrupowane wg priorytetu; przy każdym punkcie powód i korzyść.
 
 ## 0. Dług techniczny do sprzątnięcia (najpierw)
 
-- [ ] **Usunąć tymczasowy wyzwalacz `push` z `.github/workflows/release.yml`.**
+- [x] **Usunięto tymczasowy wyzwalacz `push` z `.github/workflows/release.yml`.**
   W v1.2.0 dodano build na push do brancha `claude/audit-update-recommendations-42j70w`,
   żeby zbudować EXE bez taga (środowisko blokowało push tagów i `workflow_dispatch`).
-  *Korzyść:* docelowo release powstaje tylko z pushu taga `v*` — czysty, przewidywalny
-  proces wydawniczy bez przypadkowych buildów.
+  Powodował on padanie CI przy każdym kolejnym pushu (release `v1.2.0` jest immutable,
+  nie da się nadpisać assetu). Release powstaje teraz tylko z pushu taga `v*`.
 - [ ] **Spójny schemat wersjonowania.** Zsynchronizować `version` w `pyproject.toml`
   z tagiem release’u (np. wstrzykiwać wersję w CI). *Korzyść:* brak rozjazdu wersji
   w metadanych vs. release.
