@@ -25,18 +25,20 @@ How to run (Windows):
 2. Paste URLs (one per line) into the app.
 3. Pick output format (MP3 320k, M4A 256k, AAC 256k, FLAC, WEBM Video) and output directory.
 4. Choose playlist mode: single file or full playlist.
-5. Click **Download** and watch the status; logs are available via the **Show logs** button.
-6. Files appear in the selected output directory (default: `Downloads/YYYY-MM-DD`).
+5. Optionally tune **Parallel downloads** and **Concurrent fragments**.
+6. Click **Download** and watch the status; logs are available via the **Show logs** button.
+   Use **Stop** to cancel; partial `.part` files are cleaned up afterwards.
+7. Files appear in the selected output directory (default: `Downloads/YYYY-MM-DD`).
 
 CLI mode (optional):
-1. Create `urls.txt` (not included in the repo) and put your URLs (one per line) inside
+1. Copy `urls.example.txt` to `urls.txt` (not included in the repo) and put your URLs (one per line) inside
 2. Run `python downloader.py --cli` (optional: `--single` or `--playlist`)
 3. Watch console output (progress). Logs are written to `logs/yt-dlp.log` and `logs/yt-dlp-errors.log`
 4. Files appear in the default output directory (Downloads or `downloads/` with a `YYYY-MM-DD` subfolder)
 
 Notes:
-- Binaries (yt-dlp.exe and ffmpeg.exe) will be downloaded to `bin/` automatically on first run.
-- yt-dlp self-updates on each run; ffmpeg is refreshed when a new release ZIP is detected.
+- Binaries (yt-dlp.exe and ffmpeg.exe) will be downloaded to `bin/` automatically on first run, verified against published SHA-256 checksums, with retries on transient network errors.
+- yt-dlp self-updates on each run (`--update-to stable@latest`); ffmpeg is refreshed when a new release ZIP is detected. Pin a specific ffmpeg build with the `FFMPEG_PINNED_VERSION` env var.
 - App icon is embedded in `icon_data.py` and the app will try to fetch the GitHub avatar at first run and cache it in `cache/` for the title bar.
 - Output formats include MP3 320k, M4A 256k, AAC 256k, FLAC, and WEBM Video.
 - Publisher: KENSAN LAB.
@@ -67,10 +69,12 @@ yt-dlp-python/
 │
 ├── downloader.py        # main Python script (run this)
 ├── run.bat              # Windows launcher (runs python)
-├── urls.txt             # URL list, one per line (CLI mode; not in repo)
+├── urls.example.txt     # sample URL list (copy to urls.txt for CLI mode)
 ├── icon_data.py         # embedded icon (base64)
 ├── pyproject.toml       # project metadata + Python version requirement
-├── requirements-dev.txt # build/lint tooling
+├── requirements-dev.txt # build/lint/test tooling
+├── tests/               # unit tests (pytest)
+├── ROADMAP.md           # planned / outstanding work
 ├── README.md
 ├── .gitignore
 │

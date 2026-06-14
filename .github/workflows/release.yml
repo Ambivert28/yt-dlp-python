@@ -24,6 +24,20 @@ jobs:
       - name: Install build dependencies
         run: python -m pip install --upgrade pip pyinstaller
 
+      - name: Stamp release version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          python - "$GITHUB_REF_NAME" <<'PY'
+          import re, sys, pathlib
+          version = sys.argv[1].lstrip("v")
+          path = pathlib.Path("downloader.py")
+          text = path.read_text(encoding="utf-8")
+          text = re.sub(r'"APP_VERSION", "[^"]*"', f'"APP_VERSION", "{version}"', text)
+          path.write_text(text, encoding="utf-8")
+          print("Stamped version:", version)
+          PY
+
       - name: Generate application icon
         run: python tools/write_icon.py
 

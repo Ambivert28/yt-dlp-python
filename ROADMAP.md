@@ -1,66 +1,59 @@
-# Roadmap — następny release
+# Roadmap
 
-Lista rzeczy **niezrobionych** w release `v1.2.0` (audyt), do realizacji w kolejnych
-wydaniach. Pogrupowane wg priorytetu; przy każdym punkcie powód i korzyść.
+Status prac po audycie. `[x]` = zrobione, `[ ]` = do zrobienia.
 
-## 0. Dług techniczny do sprzątnięcia (najpierw)
+## 0. Dług techniczny
 
 - [x] **Usunięto tymczasowy wyzwalacz `push` z `.github/workflows/release.yml`.**
-  W v1.2.0 dodano build na push do brancha `claude/audit-update-recommendations-42j70w`,
-  żeby zbudować EXE bez taga (środowisko blokowało push tagów i `workflow_dispatch`).
-  Powodował on padanie CI przy każdym kolejnym pushu (release `v1.2.0` jest immutable,
-  nie da się nadpisać assetu). Release powstaje teraz tylko z pushu taga `v*`.
-- [ ] **Spójny schemat wersjonowania.** Zsynchronizować `version` w `pyproject.toml`
-  z tagiem release’u (np. wstrzykiwać wersję w CI). *Korzyść:* brak rozjazdu wersji
-  w metadanych vs. release.
+  Release powstaje teraz tylko z pushu taga `v*` (+ `workflow_dispatch`).
+- [x] **Spójne wersjonowanie.** `__version__` w `downloader.py` (z możliwością
+  nadpisania przez `APP_VERSION`), pokazywane w tytule okna; release build
+  „stempluje” wersję z taga.
 
 ## 1. Bezpieczeństwo / niezawodność
 
-- [ ] **Weryfikacja SHA-256 ffmpeg** (obecnie weryfikowany jest tylko yt-dlp).
-  *Korzyść:* pełna ochrona supply-chain dla wszystkich pobieranych binariów.
-- [ ] **Przypięcie wersji ffmpeg** zamiast wykrywania po nagłówku `Last-Modified`
-  z gyan.dev. *Korzyść:* powtarzalne, przewidywalne buildy; brak cichego pominięcia
-  aktualizacji, gdy serwer nie zwróci nagłówka.
-- [ ] **Pinowanie akcji GitHub do SHA** (zamiast tagów `@v4`). *Korzyść:* odporność
-  na podmianę tagu akcji (supply-chain CI).
-- [ ] **Podpisywanie EXE (code signing)** dla Windows. *Korzyść:* mniej ostrzeżeń
-  SmartScreen/AV, większe zaufanie użytkowników.
-- [ ] **Poprawa self-update yt-dlp**: rozważyć `--update-to stable@latest`; `-U`
-  potrafi nie zadziałać dla buildów spoza kanału release. *Korzyść:* pewniejsza
-  aktualizacja silnika pobierania.
+- [x] **Weryfikacja SHA-256 ffmpeg** wobec publikowanego pliku `.sha256`.
+- [x] **Możliwość przypięcia wersji ffmpeg** przez `FFMPEG_PINNED_VERSION`
+  (domyślnie najnowszy „release-essentials”, zawsze z weryfikacją sumy).
+- [x] **Lepszy self-update yt-dlp** — `--update-to stable@latest` zamiast `-U`.
+- [x] **Retry pobierania binariów** z wykładniczym backoffem (2s/4s/8s) + timeout.
+- [ ] **Pinowanie akcji GitHub do SHA** (zamiast tagów `@v4`). *Niezrobione:*
+  w tym środowisku nie dało się wiarygodnie pobrać SHA tagów akcji (publiczne
+  API GitHub zwraca 403, a dostęp MCP jest ograniczony do tego repo). Do zrobienia
+  ręcznie: zamienić `uses: actions/...@vN` na `@<pełny-sha>  # vN`.
+- [ ] **Podpisywanie EXE (code signing)** dla Windows. *Wymaga* certyfikatu
+  do podpisywania kodu (sekret w repo) — nie da się zrobić bez niego.
 
-## 2. Architektura (większe zmiany)
+## 2. Architektura
 
-- [ ] **#8 — Użyć yt-dlp jako biblioteki PyPI** zamiast pobierać `.exe`.
-  *Korzyść:* eliminuje cały kod zarządzania binarką, działa wieloplatformowo,
-  aktualizacja przez `pip`, łatwiejsze testy.
-- [ ] **#13 — Podział monolitu `downloader.py`** na moduły (bootstrap binariów /
-  budowa komendy / GUI) + **testy jednostkowe** (`build_command`,
-  `read_urls_from_text`, `png_to_ico`, `expected_sha256`). *Korzyść:* czytelność,
-  testowalność, mniejsze ryzyko regresji.
+- [ ] **#8 — yt-dlp jako biblioteka PyPI.** *Rekomendacja: nie robić.* Obecny
+  model pobiera i **samo-aktualizuje** binarkę yt-dlp, dzięki czemu naprawy
+  YouTube działają bez przebudowy aplikacji. Wbudowanie biblioteki odebrałoby tę
+  zaletę (nowy yt-dlp wymagałby nowego release’u). Zostawiamy do decyzji.
+- [~] **#13 — Testy jednostkowe** dodane (`tests/test_downloader.py`:
+  `build_command`, `read_urls_from_text`, `expected_sha256`, `png_to_ico`).
+  Pełny podział monolitu na moduły — wciąż do zrobienia (na razie odsprzężono
+  import tkinter, by moduł był testowalny headless).
 - [ ] **#11 — Parsowanie postępu przez JSON / `--progress-template`** zamiast
-  dopasowywania fraz w `infer_status`. *Korzyść:* stabilny postęp (procenty,
-  prędkość, ETA), odporny na zmiany komunikatów i język.
+  dopasowywania fraz w `infer_status`. *Niezrobione* (większa zmiana).
 
 ## 3. Funkcje / UX
 
-- [ ] **#15 — Konfigurowalne w GUI**: liczba równoległych pobrań (`MAX_WORKERS`),
-  liczba fragmentów, jakość. *Korzyść:* dopasowanie do łącza/sprzętu bez edycji kodu.
-- [ ] **Wybór formatu per URL** (zamiast jednego globalnego). *Korzyść:* elastyczność.
-- [ ] **Drag & drop URL-i** i auto-wykrywanie linków ze schowka. *Korzyść:* wygoda.
-- [ ] **Retry/wznawianie przy błędach sieci** (z backoffem). *Korzyść:* odporność
-  na chwilowe problemy z siecią.
-- [ ] **Sprzątanie plików częściowych** po nieudanym/anulowanym pobraniu.
-  *Korzyść:* brak śmieci `.part` w katalogu wyjściowym.
-- [ ] **Lokalizacja UI (PL/EN)**. *Korzyść:* szersza dostępność.
-- [ ] **Lepsze raportowanie błędów w statusie GUI** (krótki powód obok „failed").
-  *Korzyść:* szybsza diagnoza bez zaglądania do logów.
+- [x] **#15 — Konfigurowalne w GUI**: liczba równoległych pobrań i liczba
+  fragmentów (spinboxy). Jakość audio jest już sterowana presetami formatu.
+- [x] **Retry/wznawianie przy błędach sieci** — `--continue`, `--retries`,
+  `--fragment-retries` w komendzie yt-dlp.
+- [x] **Sprzątanie plików częściowych** (`.part`, `.ytdl`) po anulowaniu.
+- [x] **Lepsze raportowanie błędów w statusie GUI** — ostatnia linia błędu obok
+  „failed”.
+- [ ] **Wybór formatu per URL** (zamiast jednego globalnego). *Niezrobione*
+  (większa zmiana UX).
+- [ ] **Drag & drop URL-i.** *Niezrobione* — wymaga zależności `tkinterdnd2`
+  (poza biblioteką standardową) i dołączenia jej do builda EXE.
+- [ ] **Lokalizacja UI (PL/EN).** *Niezrobione* (większa zmiana).
 
 ## 4. CI / dokumentacja
 
-- [ ] **Uczynić lint blokującym** (obecnie `ruff check . || true`) po posprzątaniu
-  ostrzeżeń. *Korzyść:* utrzymanie jakości kodu.
-- [ ] **Dodać uruchamianie testów w CI** (po pkt. #13). *Korzyść:* ochrona przed
-  regresją przy każdym PR.
-- [ ] **Przykładowy `urls.txt`** (np. `urls.example.txt`). *Korzyść:* łatwiejszy
-  start w trybie CLI.
+- [x] **Lint blokujący** (`ruff check .` bez `|| true`) — kod jest czysty.
+- [x] **Testy w CI** (`pytest`).
+- [x] **Przykładowy `urls.txt`** → `urls.example.txt`.
