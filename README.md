@@ -1,5 +1,19 @@
 # yt-dlp Python downloader
 
+## Download (Windows)
+The prebuilt `yt-dlp-downloader.exe` is published on the
+[Releases](../../releases) page (built automatically by GitHub Actions).
+Download the latest `.exe` and run it — yt-dlp and ffmpeg are fetched on first
+run. The binary is no longer committed to the repository.
+
+## Requirements (run from source)
+- Python 3.10 or newer (the code uses PEP 604 `X | None` type hints).
+- Tkinter (ships with the official CPython installers on Windows/macOS; on
+  Linux install e.g. `python3-tk`).
+- Node.js is recommended for YouTube JS runtime support.
+- ffmpeg: bundled automatically on Windows; on macOS/Linux install a system
+  ffmpeg (`brew install ffmpeg` / `apt install ffmpeg`).
+
 ## How to
 How to run (Windows):
 1. Run `run.bat` (double-click) or in terminal:
@@ -33,7 +47,9 @@ Notes:
 > * ffmpeg
 
 ## Build EXE (Windows)
-Use PyInstaller to create a single executable. The EXE will still download yt-dlp/ffmpeg on first run.
+Releases are built automatically by the `Build and Release` GitHub Actions
+workflow when a `v*` tag is pushed (or via manual *Run workflow*). To build
+locally, use PyInstaller. The EXE will still download yt-dlp/ffmpeg on first run.
 
 ```bash
 pip install pyinstaller
@@ -45,21 +61,23 @@ python -m PyInstaller --onefile --windowed --icon app.ico --name yt-dlp-download
 ```
 yt-dlp-python/
 │
-├── downloader.py        # główny skrypt Python (uruchamiasz)
-├── run.bat              # Windows: launcher (uruchamia python)
-├── urls.txt             # lista URL (jeden per linia)
-├── icon_data.py         # wbudowana ikona (base64)
+├── downloader.py        # main Python script (run this)
+├── run.bat              # Windows launcher (runs python)
+├── urls.txt             # URL list, one per line (CLI mode; not in repo)
+├── icon_data.py         # embedded icon (base64)
+├── pyproject.toml       # project metadata + Python version requirement
+├── requirements-dev.txt # build/lint tooling
 ├── README.md
 ├── .gitignore
 │
-├── downloads/           # miejsce docelowe - tu trafią pliki (poza Windows, w podfolderach YYYY-MM-DD)
+├── downloads/           # output (non-Windows; YYYY-MM-DD subfolders)
 ├── logs/
 │   ├── yt-dlp.log
 │   └── yt-dlp-errors.log
-├── cache/               # cache na ikony (pobierane z URL)
+├── cache/               # icon cache (fetched from URL)
 ├── tools/
-│   └── write_icon.py     # generuje app.ico lokalnie do builda EXE
+│   └── write_icon.py    # generates app.ico locally for the EXE build
 └── bin/
-    ├── yt-dlp.exe       # automatycznie pobierane (po pierwszym uruchomieniu)
-    └── ffmpeg.exe       # automatycznie pobierane (po pierwszym uruchomieniu)
+    ├── yt-dlp(.exe)     # downloaded automatically on first run (verified via SHA-256)
+    └── ffmpeg(.exe)     # downloaded automatically on first run (Windows)
 ```

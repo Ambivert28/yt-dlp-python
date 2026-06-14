@@ -1,0 +1,20 @@
+[project]
+name = "yt-dlp-python-downloader"
+version = "1.0.0"
+description = "Tkinter GUI launcher for yt-dlp with automatic yt-dlp/ffmpeg bootstrap."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+# Runtime uses only the Python standard library (incl. tkinter, which ships
+# with the official CPython Windows/macOS installers). No third-party
+# packages are required to run downloader.py.
+dependencies = []
+
+[project.optional-dependencies]
+# Tooling used to build the standalone Windows .exe.
+build = ["pyinstaller>=6.0"]
+# Tooling used for linting in CI.
+dev = ["ruff>=0.5"]
+
+[project.scripts]
+yt-dlp-downloader = "downloader:main"

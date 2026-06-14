@@ -3,4 +3,9 @@ downloads/
 logs/
 __pycache__/
 app.ico
+app.png
 cache/
+build/
+dist/
+*.exe
+*.spec
