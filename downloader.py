@@ -10,6 +10,7 @@ yt-dlp Python launcher
 
 import base64
 import datetime as dt
+import hashlib
 import os
 import sys
 import shutil
@@ -31,7 +32,21 @@ from tkinter.scrolledtext import ScrolledText
 from icon_data import ICO_BASE64, PNG_BASE64
 
 # ---------------- CONFIG ----------------
-BASE = Path(__file__).resolve().parent
+# When frozen by PyInstaller, __file__ points at a temporary extraction dir
+# that is wiped on exit; use the executable's directory so bin/, logs/ and
+# downloads/ persist next to the .exe.
+if getattr(sys, "frozen", False):
+    BASE = Path(sys.executable).resolve().parent
+else:
+    BASE = Path(__file__).resolve().parent
+
+IS_WINDOWS = sys.platform.startswith("win")
+IS_MACOS = sys.platform == "darwin"
+EXE_SUFFIX = ".exe" if IS_WINDOWS else ""
+
+# default network timeout (seconds) for all HTTP requests
+NETWORK_TIMEOUT = 60
+
 BIN = BASE / "bin"
 ICON_CACHE_DIR = BASE / "cache"
 
@@ -45,8 +60,9 @@ def default_output_dir():
 
 OUT = default_output_dir()
 LOGS = BASE / "logs"
-YT_DLP_EXE = BIN / "yt-dlp.exe"
-FFMPEG_EXE = BIN / "ffmpeg.exe"
+YT_DLP_EXE = BIN / f"yt-dlp{EXE_SUFFIX}"
+FFMPEG_EXE = BIN / f"ffmpeg{EXE_SUFFIX}"
+FFPROBE_EXE = BIN / f"ffprobe{EXE_SUFFIX}"
 
 URLS_FILE = BASE / "urls.txt"
 LOG_FILE = LOGS / "yt-dlp.log"
@@ -63,7 +79,19 @@ CONCURRENT_FRAGMENTS = "16"
 AUDIO_QUALITY = "0"  # best VBR
 
 # download sources
-YTDLP_RELEASE_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+
+def _ytdlp_asset_name():
+    if IS_WINDOWS:
+        return "yt-dlp.exe"
+    if IS_MACOS:
+        return "yt-dlp_macos"
+    return "yt-dlp_linux"
+
+YTDLP_ASSET_NAME = _ytdlp_asset_name()
+YTDLP_RELEASE_URL = f"https://github.com/yt-dlp/yt-dlp/releases/latest/download/{YTDLP_ASSET_NAME}"
+# yt-dlp publishes a checksum manifest alongside every release; used to verify
+# the downloaded binary before it is ever executed.
+YTDLP_SHA_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS"
 FFMPEG_ZIP_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 FFMPEG_VERSION_FILE = BIN / "ffmpeg.version"
 ICON_URL = "https://avatars.githubusercontent.com/u/79589310?v=4"
@@ -97,11 +125,34 @@ def download_file(url: str, dest: Path):
     print(f"Downloading {url} -> {dest.name} ...")
     try:
         request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(request) as response, dest.open("wb") as handle:
-            handle.write(response.read())
+        with urllib.request.urlopen(request, timeout=NETWORK_TIMEOUT) as response, dest.open("wb") as handle:
+            # stream in chunks instead of loading the whole file into memory
+            shutil.copyfileobj(response, handle)
     except Exception as e:
         print(f"ERROR downloading {url}: {e}")
         raise
+
+def fetch_text(url: str) -> str | None:
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(request, timeout=NETWORK_TIMEOUT) as response:
+            return response.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+
+def sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def expected_sha256(sums_text: str, asset_name: str) -> str | None:
+    for line in sums_text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1].lstrip("*") == asset_name:
+            return parts[0].lower()
+    return None
 
 def png_to_ico(png_data: bytes) -> bytes:
     if not png_data.startswith(b"\x89PNG"):
@@ -129,7 +180,7 @@ def ensure_icon_files():
 def get_remote_last_modified(url: str):
     try:
         request = urllib.request.Request(url, method="HEAD")
-        with urllib.request.urlopen(request) as response:
+        with urllib.request.urlopen(request, timeout=NETWORK_TIMEOUT) as response:
             return response.headers.get("Last-Modified")
     except Exception:
         return None
@@ -143,10 +194,36 @@ def write_version_stamp(value: str | None):
     if value:
         FFMPEG_VERSION_FILE.write_text(value, encoding="utf-8")
 
+def verify_yt_dlp(path: Path) -> bool:
+    """Verify the downloaded binary against the published SHA2-256SUMS.
+
+    Returns True when it matches; True as well if the manifest cannot be
+    fetched (so an offline-ish environment is not fully blocked), and False
+    only on a definite mismatch.
+    """
+    sums_text = fetch_text(YTDLP_SHA_URL)
+    if not sums_text:
+        print("WARNING: could not fetch yt-dlp checksums; skipping verification.")
+        return True
+    expected = expected_sha256(sums_text, YTDLP_ASSET_NAME)
+    if not expected:
+        print("WARNING: no checksum entry for", YTDLP_ASSET_NAME, "; skipping verification.")
+        return True
+    actual = sha256_of(path)
+    if actual != expected:
+        print(f"ERROR: yt-dlp checksum mismatch (expected {expected}, got {actual}).")
+        return False
+    return True
+
 def ensure_yt_dlp():
     if not YT_DLP_EXE.exists():
-        tmp = BIN / "yt-dlp.tmp.exe"
+        tmp = BIN / f"yt-dlp.tmp{EXE_SUFFIX}"
         download_file(YTDLP_RELEASE_URL, tmp)
+        if not verify_yt_dlp(tmp):
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError("yt-dlp checksum verification failed")
+        if not IS_WINDOWS:
+            tmp.chmod(0o755)
         tmp.replace(YT_DLP_EXE)
         print("yt-dlp downloaded.")
     else:
@@ -157,12 +234,21 @@ def ensure_yt_dlp():
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0,
+                creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0,
             )
         except Exception:
             pass
 
 def ensure_ffmpeg():
+    # The bundled ffmpeg build is Windows-only (gyan.dev). On macOS/Linux rely
+    # on a system ffmpeg from PATH and only warn if it is missing.
+    if not IS_WINDOWS:
+        if FFMPEG_EXE.exists() or shutil.which("ffmpeg"):
+            return
+        print("WARNING: ffmpeg not found on PATH. Install it via your package "
+              "manager (e.g. 'brew install ffmpeg' or 'apt install ffmpeg').")
+        return
+
     remote_stamp = get_remote_last_modified(FFMPEG_ZIP_URL)
     local_stamp = read_version_stamp()
     needs_update = not FFMPEG_EXE.exists()
@@ -188,7 +274,7 @@ def ensure_ffmpeg():
                 raise FileNotFoundError("ffmpeg.exe not found inside archive")
             shutil.copy2(ffmpeg_src, FFMPEG_EXE)
             if ffprobe_src:
-                shutil.copy2(ffprobe_src, BIN / "ffprobe.exe")
+                shutil.copy2(ffprobe_src, FFPROBE_EXE)
             write_version_stamp(remote_stamp)
             print("ffmpeg extracted.")
         finally:
@@ -223,7 +309,8 @@ def read_urls_from_text(text: str):
     return lines
 
 def build_command(url: str, output_dir: Path, output_format: dict, playlist_mode: str):
-    outtmpl = f"{output_dir / '%(title)s.%(ext)s'}"
+    # include %(id)s so two videos sharing a title do not overwrite each other
+    outtmpl = f"{output_dir / '%(title)s [%(id)s].%(ext)s'}"
     cmd = [
         str(YT_DLP_EXE),
         "--js-runtimes",
@@ -234,9 +321,6 @@ def build_command(url: str, output_dir: Path, output_format: dict, playlist_mode
         PARALLEL_FRAGMENTS,
         "--concurrent-fragments",
         CONCURRENT_FRAGMENTS,
-        "--ffmpeg-location",
-        str(BIN),
-        "--add-metadata",
         "--embed-metadata",
         "--progress",
         "--newline",
@@ -244,6 +328,10 @@ def build_command(url: str, output_dir: Path, output_format: dict, playlist_mode
         "--no-mtime",
         "--restrict-filenames",
     ]
+    # only point yt-dlp at our bundled ffmpeg when we actually have one;
+    # otherwise let it find a system ffmpeg on PATH
+    if FFMPEG_EXE.exists():
+        cmd += ["--ffmpeg-location", str(BIN)]
     if output_format["video_only"]:
         cmd += ["-f", "bestvideo[ext=webm]+bestaudio[ext=webm]/best[ext=webm]"]
         cmd += ["--no-embed-thumbnail"]
@@ -299,16 +387,23 @@ def run_yt_dlp_for_url(
     output_format: dict,
     playlist_mode: str,
     event_queue: Queue | None = None,
+    cancel_event: threading.Event | None = None,
+    proc_registry: set | None = None,
+    registry_lock: threading.Lock | None = None,
 ):
     """
-    Runs yt-dlp.exe as a subprocess for a single URL.
+    Runs the yt-dlp binary as a subprocess for a single URL.
     Streams stdout/stderr to console/GUI with prefix and appends to log files.
+    Honours cancel_event for cooperative stopping.
     Returns (url, returncode).
     """
+    if cancel_event is not None and cancel_event.is_set():
+        return (url, -2)
+
     cmd = build_command(url, output_dir, output_format, playlist_mode)
     prefix = f"[{index}] "
 
-    creationflags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
+    creationflags = subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -317,11 +412,17 @@ def run_yt_dlp_for_url(
         universal_newlines=True,
         creationflags=creationflags,
     )
+    if proc_registry is not None and registry_lock is not None:
+        with registry_lock:
+            proc_registry.add(proc)
     retcode = None
     try:
         with LOG_FILE.open("a", encoding="utf-8") as logf:
             log_line(f"\n\n=== START {time.strftime('%Y-%m-%d %H:%M:%S')} URL={url}", logf)
             for line in proc.stdout:
+                if cancel_event is not None and cancel_event.is_set():
+                    proc.terminate()
+                    break
                 out_line = line.rstrip("\n")
                 console_line = prefix + out_line
                 print(console_line)
@@ -339,6 +440,10 @@ def run_yt_dlp_for_url(
         if proc and proc.poll() is None:
             proc.kill()
         retcode = -1
+    finally:
+        if proc_registry is not None and registry_lock is not None:
+            with registry_lock:
+                proc_registry.discard(proc)
 
     return (url, retcode)
 
@@ -398,6 +503,9 @@ class DownloaderGUI:
         self.event_queue = Queue()
         self.executor = None
         self.worker_thread = None
+        self.cancel_event = threading.Event()
+        self.active_procs = set()
+        self.procs_lock = threading.Lock()
 
         self.urls_text = None
         self.log_text = None
@@ -410,6 +518,7 @@ class DownloaderGUI:
         self.playlist_var = tk.StringVar(value="single")
 
         self.start_button = None
+        self.stop_button = None
 
         self.configure_theme()
         self.set_app_icon()
@@ -573,7 +682,24 @@ class DownloaderGUI:
             borderwidth=0,
             highlightthickness=0,
         )
-        self.start_button.grid(row=2, column=0, columnspan=5, pady=(12, 0), sticky="ew")
+        self.start_button.grid(row=2, column=0, columnspan=4, pady=(12, 0), sticky="ew")
+
+        self.stop_button = tk.Button(
+            options_frame,
+            text="Stop",
+            command=self.stop_downloads,
+            background="#b3261e",
+            foreground="#ffffff",
+            activebackground="#d13b32",
+            activeforeground="#ffffff",
+            font=self.download_font,
+            padx=14,
+            pady=8,
+            borderwidth=0,
+            highlightthickness=0,
+            state=tk.DISABLED,
+        )
+        self.stop_button.grid(row=2, column=4, pady=(12, 0), padx=(8, 0), sticky="ew")
 
         for col in range(5):
             options_frame.columnconfigure(col, weight=1, uniform="options")
@@ -609,8 +735,21 @@ class DownloaderGUI:
             self.urls_text.delete("1.0", tk.END)
 
     def set_controls_state(self, enabled: bool):
-        state = tk.NORMAL if enabled else tk.DISABLED
-        self.start_button.configure(state=state)
+        self.start_button.configure(state=tk.NORMAL if enabled else tk.DISABLED)
+        if self.stop_button is not None:
+            self.stop_button.configure(state=tk.DISABLED if enabled else tk.NORMAL)
+
+    def stop_downloads(self):
+        self.cancel_event.set()
+        with self.procs_lock:
+            for proc in list(self.active_procs):
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+        self.append_log("=== Stop requested; cancelling downloads... ===")
+        if self.stop_button is not None:
+            self.stop_button.configure(state=tk.DISABLED)
 
     def bind_text_context_menu(self):
         menu = tk.Menu(self.root, tearoff=0)
@@ -681,6 +820,7 @@ class DownloaderGUI:
             self.status_tree.insert("", "end", iid=str(i), values=("queued", url))
 
         self.append_log("=== Start ===")
+        self.cancel_event.clear()
         self.set_controls_state(False)
 
         self.worker_thread = threading.Thread(
@@ -717,6 +857,9 @@ class DownloaderGUI:
                     output_format,
                     playlist_mode,
                     self.event_queue,
+                    self.cancel_event,
+                    self.active_procs,
+                    self.procs_lock,
                 ): (url, i + 1)
                 for i, url in enumerate(urls)
             }
@@ -724,7 +867,12 @@ class DownloaderGUI:
                 url, index = futures[fut]
                 try:
                     _, code = fut.result()
-                    status = "done" if code == 0 else f"failed ({code})"
+                    if code == 0:
+                        status = "done"
+                    elif code == -2:
+                        status = "cancelled"
+                    else:
+                        status = f"failed ({code})"
                     queue_event(self.event_queue, {"type": "status", "index": index, "status": status})
                 except Exception as e:
                     queue_event(self.event_queue, {"type": "log", "text": f"[ERROR] {url} raised exception: {e}"})
