@@ -8,7 +8,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from icon_data import ICO_BASE64, PNG_BASE64
+from icon_data import ICO_BASE64, PNG_BASE64  # noqa: E402
 
 OUTPUT = Path("app.ico")
 PNG_OUTPUT = Path("app.png")

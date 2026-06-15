@@ -2,3 +2,4 @@
 # Runtime needs nothing beyond the Python standard library (tkinter included).
 pyinstaller>=6.0
 ruff>=0.5
+pytest>=8.0

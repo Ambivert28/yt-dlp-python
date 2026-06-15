@@ -13,8 +13,8 @@ dependencies = []
 [project.optional-dependencies]
 # Tooling used to build the standalone Windows .exe.
 build = ["pyinstaller>=6.0"]
-# Tooling used for linting in CI.
-dev = ["ruff>=0.5"]
+# Tooling used for linting and testing in CI.
+dev = ["ruff>=0.5", "pytest>=8.0"]
 
 [project.scripts]
 yt-dlp-downloader = "downloader:main"

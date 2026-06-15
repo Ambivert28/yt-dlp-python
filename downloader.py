@@ -8,6 +8,8 @@ yt-dlp Python launcher
 - converts best audio -> selected format, embeds metadata & cover
 """
 
+from __future__ import annotations
+
 import base64
 import datetime as dt
 import hashlib
@@ -25,11 +27,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from queue import Empty, Queue
 
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-from tkinter.scrolledtext import ScrolledText
+# tkinter is only needed for the GUI; guard the import so the module (and its
+# pure helpers) can be imported in headless environments and unit tests.
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+    from tkinter.scrolledtext import ScrolledText
+except Exception:  # pragma: no cover - headless / tkinter missing
+    tk = None
+    filedialog = messagebox = ttk = None
+    ScrolledText = None
 
 from icon_data import ICO_BASE64, PNG_BASE64
+
+# Application version. Kept in sync with the released tag by CI (the release
+# workflow can override it via the APP_VERSION environment variable).
+__version__ = os.environ.get("APP_VERSION", "1.3.0")
 
 # ---------------- CONFIG ----------------
 # When frozen by PyInstaller, __file__ points at a temporary extraction dir
@@ -46,6 +59,8 @@ EXE_SUFFIX = ".exe" if IS_WINDOWS else ""
 
 # default network timeout (seconds) for all HTTP requests
 NETWORK_TIMEOUT = 60
+# how many times to retry a failed binary download (with exponential backoff)
+DOWNLOAD_RETRIES = 3
 
 BIN = BASE / "bin"
 ICON_CACHE_DIR = BASE / "cache"
@@ -92,7 +107,18 @@ YTDLP_RELEASE_URL = f"https://github.com/yt-dlp/yt-dlp/releases/latest/download/
 # yt-dlp publishes a checksum manifest alongside every release; used to verify
 # the downloaded binary before it is ever executed.
 YTDLP_SHA_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS"
-FFMPEG_ZIP_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+# Pin a specific ffmpeg build for reproducibility by setting FFMPEG_PINNED_VERSION
+# (e.g. "7.1") via the environment; otherwise the latest "release-essentials"
+# build is used. gyan.dev publishes a matching ".sha256" used for verification.
+FFMPEG_PINNED_VERSION = os.environ.get("FFMPEG_PINNED_VERSION", "").strip()
+if FFMPEG_PINNED_VERSION:
+    FFMPEG_ZIP_URL = (
+        "https://www.gyan.dev/ffmpeg/builds/packages/"
+        f"ffmpeg-{FFMPEG_PINNED_VERSION}-essentials_build.zip"
+    )
+else:
+    FFMPEG_ZIP_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+FFMPEG_SHA_URL = FFMPEG_ZIP_URL + ".sha256"
 FFMPEG_VERSION_FILE = BIN / "ffmpeg.version"
 ICON_URL = "https://avatars.githubusercontent.com/u/79589310?v=4"
 
@@ -121,16 +147,22 @@ def ensure_dirs():
     LOG_FILE.touch(exist_ok=True)
     ERR_LOG_FILE.touch(exist_ok=True)
 
-def download_file(url: str, dest: Path):
+def download_file(url: str, dest: Path, retries: int = DOWNLOAD_RETRIES):
     print(f"Downloading {url} -> {dest.name} ...")
-    try:
-        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(request, timeout=NETWORK_TIMEOUT) as response, dest.open("wb") as handle:
-            # stream in chunks instead of loading the whole file into memory
-            shutil.copyfileobj(response, handle)
-    except Exception as e:
-        print(f"ERROR downloading {url}: {e}")
-        raise
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(request, timeout=NETWORK_TIMEOUT) as response, dest.open("wb") as handle:
+                # stream in chunks instead of loading the whole file into memory
+                shutil.copyfileobj(response, handle)
+            return
+        except Exception as e:
+            last_error = e
+            print(f"ERROR downloading {url} (attempt {attempt}/{retries}): {e}")
+            if attempt < retries:
+                time.sleep(2 ** attempt)  # exponential backoff: 2s, 4s, 8s, ...
+    raise last_error
 
 def fetch_text(url: str) -> str | None:
     try:
@@ -227,10 +259,11 @@ def ensure_yt_dlp():
         tmp.replace(YT_DLP_EXE)
         print("yt-dlp downloaded.")
     else:
-        # try to self-update via downloaded binary; ignore errors
+        # try to self-update via downloaded binary; ignore errors.
+        # --update-to stable@latest is more reliable than -U for non-release builds.
         try:
             subprocess.run(
-                [str(YT_DLP_EXE), "-U"],
+                [str(YT_DLP_EXE), "--update-to", "stable@latest"],
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -258,6 +291,14 @@ def ensure_ffmpeg():
     if needs_update:
         zpath = BIN / "ffmpeg.zip"
         download_file(FFMPEG_ZIP_URL, zpath)
+        sha_text = fetch_text(FFMPEG_SHA_URL)
+        if sha_text:
+            expected = sha_text.split()[0].strip().lower() if sha_text.split() else None
+            if expected and sha256_of(zpath) != expected:
+                zpath.unlink(missing_ok=True)
+                raise RuntimeError("ffmpeg archive checksum verification failed")
+        else:
+            print("WARNING: could not fetch ffmpeg checksum; skipping verification.")
         try:
             with zipfile.ZipFile(zpath, "r") as z:
                 z.extractall(BIN)
@@ -289,11 +330,11 @@ def read_urls_from_file():
         sys.exit(1)
     lines = []
     with URLS_FILE.open(encoding="utf-8") as f:
-        for l in f:
-            l = l.strip()
-            if not l or l.startswith("#"):
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#"):
                 continue
-            lines.append(l)
+            lines.append(line)
     if not lines:
         print("urls.txt is empty (or only comments).")
         sys.exit(1)
@@ -301,16 +342,18 @@ def read_urls_from_file():
 
 def read_urls_from_text(text: str):
     lines = []
-    for l in text.splitlines():
-        l = l.strip()
-        if not l or l.startswith("#"):
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
             continue
-        lines.append(l)
+        lines.append(line)
     return lines
 
-def build_command(url: str, output_dir: Path, output_format: dict, playlist_mode: str):
+def build_command(url: str, output_dir: Path, output_format: dict, playlist_mode: str,
+                  fragments: str = PARALLEL_FRAGMENTS):
     # include %(id)s so two videos sharing a title do not overwrite each other
     outtmpl = f"{output_dir / '%(title)s [%(id)s].%(ext)s'}"
+    fragments = str(fragments)
     cmd = [
         str(YT_DLP_EXE),
         "--js-runtimes",
@@ -318,15 +361,21 @@ def build_command(url: str, output_dir: Path, output_format: dict, playlist_mode
         "-o",
         outtmpl,
         "-N",
-        PARALLEL_FRAGMENTS,
+        fragments,
         "--concurrent-fragments",
-        CONCURRENT_FRAGMENTS,
+        fragments,
         "--embed-metadata",
         "--progress",
         "--newline",
         "--ignore-errors",
         "--no-mtime",
         "--restrict-filenames",
+        # resume partially downloaded files and retry transient network errors
+        "--continue",
+        "--retries",
+        "10",
+        "--fragment-retries",
+        "10",
     ]
     # only point yt-dlp at our bundled ffmpeg when we actually have one;
     # otherwise let it find a system ffmpeg on PATH
@@ -390,18 +439,20 @@ def run_yt_dlp_for_url(
     cancel_event: threading.Event | None = None,
     proc_registry: set | None = None,
     registry_lock: threading.Lock | None = None,
+    fragments: str = PARALLEL_FRAGMENTS,
 ):
     """
     Runs the yt-dlp binary as a subprocess for a single URL.
     Streams stdout/stderr to console/GUI with prefix and appends to log files.
     Honours cancel_event for cooperative stopping.
-    Returns (url, returncode).
+    Returns (url, returncode, last_error_line).
     """
     if cancel_event is not None and cancel_event.is_set():
-        return (url, -2)
+        return (url, -2, "")
 
-    cmd = build_command(url, output_dir, output_format, playlist_mode)
+    cmd = build_command(url, output_dir, output_format, playlist_mode, fragments=fragments)
     prefix = f"[{index}] "
+    last_error = ""
 
     creationflags = subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
     proc = subprocess.Popen(
@@ -428,6 +479,8 @@ def run_yt_dlp_for_url(
                 print(console_line)
                 log_line(console_line, logf)
                 queue_event(event_queue, {"type": "log", "text": console_line})
+                if "error" in out_line.lower():
+                    last_error = out_line.strip()
                 status = infer_status(out_line)
                 if status:
                     queue_event(event_queue, {"type": "status", "index": index, "status": status})
@@ -440,12 +493,27 @@ def run_yt_dlp_for_url(
         if proc and proc.poll() is None:
             proc.kill()
         retcode = -1
+        last_error = str(e)
     finally:
         if proc_registry is not None and registry_lock is not None:
             with registry_lock:
                 proc_registry.discard(proc)
 
-    return (url, retcode)
+    return (url, retcode, last_error)
+
+def cleanup_partial_files(output_dir: Path):
+    """Remove leftover yt-dlp partial files after a cancelled/failed run."""
+    if not output_dir.exists():
+        return
+    removed = 0
+    for pattern in ("*.part", "*.ytdl", "*.part-Frag*"):
+        for leftover in output_dir.glob(pattern):
+            try:
+                leftover.unlink()
+                removed += 1
+            except Exception:
+                pass
+    return removed
 
 def cli_main():
     print("=== yt-dlp Python downloader ===")
@@ -499,7 +567,7 @@ PUBLISHER = "KENSAN LAB"
 class DownloaderGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title(f"YouTube Audio Downloader - {PUBLISHER}")
+        self.root.title(f"YouTube Audio Downloader v{__version__} - {PUBLISHER}")
         self.event_queue = Queue()
         self.executor = None
         self.worker_thread = None
@@ -516,6 +584,8 @@ class DownloaderGUI:
         self.output_dir_var = tk.StringVar(value=str(OUT))
         self.format_var = tk.StringVar(value=OUTPUT_FORMATS[0]["name"])
         self.playlist_var = tk.StringVar(value="single")
+        self.workers_var = tk.IntVar(value=MAX_WORKERS)
+        self.fragments_var = tk.IntVar(value=int(PARALLEL_FRAGMENTS))
 
         self.start_button = None
         self.stop_button = None
@@ -668,6 +738,20 @@ class DownloaderGUI:
         browse_button = ttk.Button(options_frame, text="Browse", command=self.choose_output_dir)
         browse_button.grid(row=1, column=4, pady=(8, 0), sticky="ew")
 
+        workers_label = ttk.Label(options_frame, text="Parallel downloads:")
+        workers_label.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        workers_spin = ttk.Spinbox(
+            options_frame, from_=1, to=16, textvariable=self.workers_var, width=6
+        )
+        workers_spin.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
+
+        fragments_label = ttk.Label(options_frame, text="Concurrent fragments:")
+        fragments_label.grid(row=2, column=2, sticky="ew", padx=(8, 0), pady=(8, 0))
+        fragments_spin = ttk.Spinbox(
+            options_frame, from_=1, to=64, textvariable=self.fragments_var, width=6
+        )
+        fragments_spin.grid(row=2, column=3, sticky="w", padx=(8, 0), pady=(8, 0))
+
         self.start_button = tk.Button(
             options_frame,
             text="Download",
@@ -682,7 +766,7 @@ class DownloaderGUI:
             borderwidth=0,
             highlightthickness=0,
         )
-        self.start_button.grid(row=2, column=0, columnspan=4, pady=(12, 0), sticky="ew")
+        self.start_button.grid(row=3, column=0, columnspan=4, pady=(12, 0), sticky="ew")
 
         self.stop_button = tk.Button(
             options_frame,
@@ -699,7 +783,7 @@ class DownloaderGUI:
             highlightthickness=0,
             state=tk.DISABLED,
         )
-        self.stop_button.grid(row=2, column=4, pady=(12, 0), padx=(8, 0), sticky="ew")
+        self.stop_button.grid(row=3, column=4, pady=(12, 0), padx=(8, 0), sticky="ew")
 
         for col in range(5):
             options_frame.columnconfigure(col, weight=1, uniform="options")
@@ -847,7 +931,16 @@ class DownloaderGUI:
         output_dir.mkdir(parents=True, exist_ok=True)
         start_time = time.time()
 
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as exe:
+        try:
+            workers = max(1, int(self.workers_var.get()))
+        except Exception:
+            workers = MAX_WORKERS
+        try:
+            fragments = str(max(1, int(self.fragments_var.get())))
+        except Exception:
+            fragments = PARALLEL_FRAGMENTS
+
+        with ThreadPoolExecutor(max_workers=workers) as exe:
             futures = {
                 exe.submit(
                     run_yt_dlp_for_url,
@@ -860,23 +953,30 @@ class DownloaderGUI:
                     self.cancel_event,
                     self.active_procs,
                     self.procs_lock,
+                    fragments,
                 ): (url, i + 1)
                 for i, url in enumerate(urls)
             }
             for fut in as_completed(futures):
                 url, index = futures[fut]
                 try:
-                    _, code = fut.result()
+                    _, code, err = fut.result()
                     if code == 0:
                         status = "done"
                     elif code == -2:
                         status = "cancelled"
+                    elif err:
+                        status = f"failed ({code}): {err[:80]}"
                     else:
                         status = f"failed ({code})"
                     queue_event(self.event_queue, {"type": "status", "index": index, "status": status})
                 except Exception as e:
                     queue_event(self.event_queue, {"type": "log", "text": f"[ERROR] {url} raised exception: {e}"})
                     queue_event(self.event_queue, {"type": "status", "index": index, "status": "error"})
+
+        if self.cancel_event.is_set():
+            cleanup_partial_files(output_dir)
+            queue_event(self.event_queue, {"type": "log", "text": "Removed partial files from cancelled downloads."})
 
         elapsed = time.time() - start_time
         queue_event(self.event_queue, {"type": "log", "text": f"All done. Elapsed: {elapsed:.1f}s"})
@@ -914,8 +1014,11 @@ def main():
     if "--cli" in sys.argv:
         cli_main()
         return
+    if tk is None:
+        print("tkinter is not available; run with --cli for the command-line mode.")
+        sys.exit(1)
     root = tk.Tk()
-    app = DownloaderGUI(root)
+    DownloaderGUI(root)
     root.mainloop()
 
 if __name__ == "__main__":

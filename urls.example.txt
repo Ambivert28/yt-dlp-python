@@ -1,0 +1,7 @@
+# Sample URL list for CLI mode (python downloader.py --cli)
+# - one URL per line
+# - blank lines and lines starting with '#' are ignored
+# Copy this file to urls.txt and replace with your own links.
+
+https://www.youtube.com/watch?v=dQw4w9WgXcQ
+# https://www.youtube.com/playlist?list=PLxxxxxxxxxxxxxxxx

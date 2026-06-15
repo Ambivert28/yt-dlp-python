@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  lint:
+  lint-and-test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -17,11 +17,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install linter
-        run: python -m pip install --upgrade pip ruff
+      - name: Install tooling
+        run: python -m pip install --upgrade pip ruff pytest
 
       - name: Byte-compile sources
         run: python -m compileall downloader.py tools/write_icon.py
 
       - name: Lint
-        run: ruff check . || true
+        run: ruff check .
+
+      - name: Run tests
+        run: python -m pytest -q
